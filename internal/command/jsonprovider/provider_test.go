@@ -31,6 +31,8 @@ func TestMarshalProvider(t *testing.T) {
 				DataSourceSchemas:        map[string]*Schema{},
 				EphemeralResourceSchemas: map[string]*Schema{},
 				ResourceIdentitySchemas:  map[string]*IdentitySchema{},
+				ListResourceSchemas:      map[string]*Schema{},
+				ActionSchemas:            map[string]*ActionSchema{},
 			},
 		},
 		{
@@ -208,7 +210,46 @@ func TestMarshalProvider(t *testing.T) {
 						},
 					},
 				},
+				ListResourceSchemas: map[string]*Schema{
+					"test_list_resource": {
+						Version: 1,
+						Block: &Block{
+							Attributes: map[string]*Attribute{
+								"filter": {
+									AttributeType:   json.RawMessage(`"string"`),
+									Optional:        true,
+									DescriptionKind: "plain",
+								},
+								"items": {
+									AttributeType:   json.RawMessage(`["list","string"]`),
+									Required:        true,
+									DescriptionKind: "plain",
+								},
+							},
+							DescriptionKind: "plain",
+						},
+					},
+				},
 				ResourceIdentitySchemas: map[string]*IdentitySchema{},
+				ActionSchemas: map[string]*ActionSchema{
+					"test_action": {
+						ConfigSchema: &Block{
+							Attributes: map[string]*Attribute{
+								"opt_attr": {
+									AttributeType:   json.RawMessage(`"string"`),
+									Optional:        true,
+									DescriptionKind: "plain",
+								},
+								"req_attr": {
+									AttributeType:   json.RawMessage(`["list","string"]`),
+									Required:        true,
+									DescriptionKind: "plain",
+								},
+							},
+							DescriptionKind: "plain",
+						},
+					},
+				},
 			},
 		},
 	}
@@ -313,6 +354,40 @@ func testProvider() providers.ProviderSchema {
 								},
 							},
 						},
+					},
+				},
+			},
+		},
+		ListResourceTypes: map[string]providers.Schema{
+			"test_list_resource": {
+				Version: 1,
+				Body: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"data": {
+							Type:     cty.DynamicPseudoType,
+							Computed: true,
+						},
+					},
+					BlockTypes: map[string]*configschema.NestedBlock{
+						"config": {
+							Block: configschema.Block{
+								Attributes: map[string]*configschema.Attribute{
+									"filter": {Type: cty.String, Optional: true},
+									"items":  {Type: cty.List(cty.String), Required: true},
+								},
+							},
+							Nesting: configschema.NestingSingle,
+						},
+					},
+				},
+			},
+		},
+		Actions: map[string]providers.ActionSchema{
+			"test_action": {
+				ConfigSchema: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"opt_attr": {Type: cty.String, Optional: true},
+						"req_attr": {Type: cty.List(cty.String), Required: true},
 					},
 				},
 			},

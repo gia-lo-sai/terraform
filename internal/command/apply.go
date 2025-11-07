@@ -219,19 +219,15 @@ func (c *ApplyCommand) PrepareBackend(planFile *planfile.WrappedPlanFile, args *
 			))
 			return nil, diags
 		}
+		// TODO: Update BackendForLocalPlan to use state storage, and plan to be able to contain State Store config details
 		be, beDiags = c.BackendForLocalPlan(plan.Backend)
 	} else {
-		// Both new plans and saved cloud plans load their backend from config.
-		backendConfig, configDiags := c.loadBackendConfig(".")
-		diags = diags.Append(configDiags)
-		if configDiags.HasErrors() {
-			return nil, diags
-		}
 
-		be, beDiags = c.Backend(&BackendOpts{
-			Config:   backendConfig,
-			ViewType: viewType,
-		})
+		// Load the backend
+		//
+		// Note: Both new plans and saved cloud plans load their backend from config,
+		// hence the config parsing in the method below.
+		be, beDiags = c.backend(".", viewType)
 	}
 
 	diags = diags.Append(beDiags)
@@ -274,6 +270,7 @@ func (c *ApplyCommand) OperationRequest(
 	opReq.Type = backendrun.OperationTypeApply
 	opReq.View = view.Operation()
 	opReq.StatePersistInterval = c.Meta.StatePersistInterval()
+	opReq.ActionTargets = args.ActionTargets
 
 	// EXPERIMENTAL: maybe enable deferred actions
 	if c.AllowExperimentalFeatures {
@@ -379,12 +376,20 @@ Options:
   -parallelism=n         Limit the number of parallel resource operations.
                          Defaults to 10.
 
+  -replace=resource      Terraform will plan to replace this resource instance
+                         instead of doing an update or no-op action. 
+
   -state=path            Path to read and save state (unless state-out
                          is specified). Defaults to "terraform.tfstate".
+                         Legacy option for the local backend only. See the local
+                         backend's documentation for more information.
 
   -state-out=path        Path to write state to that is different than
                          "-state". This can be used to preserve the old
                          state.
+                         Legacy option for the local backend only. See the local
+                         backend's documentation for more information.
+
                          
   -var 'foo=bar'         Set a value for one of the input variables in the root
                          module of the configuration. Use this option more than

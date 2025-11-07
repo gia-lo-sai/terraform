@@ -346,7 +346,7 @@ func NewDiagnostic(diag tfdiags.Diagnostic, sources map[string][]byte) *Diagnost
 							}
 						}
 						switch {
-						case val.HasMark(marks.Sensitive) && val.HasMark(marks.Ephemeral):
+						case marks.Has(val, marks.Sensitive) && marks.Has(val, marks.Ephemeral):
 							// We only mention the combination of sensitive and ephemeral
 							// values if the diagnostic we're rendering is explicitly
 							// marked as being caused by sensitive and ephemeral values,
@@ -357,7 +357,7 @@ func NewDiagnostic(diag tfdiags.Diagnostic, sources map[string][]byte) *Diagnost
 							}
 
 							value.Statement = "has an ephemeral, sensitive value"
-						case val.HasMark(marks.Sensitive):
+						case marks.Has(val, marks.Sensitive):
 							// We only mention a sensitive value if the diagnostic
 							// we're rendering is explicitly marked as being
 							// caused by sensitive values, because otherwise
@@ -370,7 +370,7 @@ func NewDiagnostic(diag tfdiags.Diagnostic, sources map[string][]byte) *Diagnost
 							// in order to minimize the chance of giving away
 							// whatever was sensitive about it.
 							value.Statement = "has a sensitive value"
-						case val.HasMark(marks.Ephemeral):
+						case marks.Has(val, marks.Ephemeral):
 							if !includeEphemeral {
 								continue Traversals
 							}
@@ -446,7 +446,9 @@ func NewDiagnostic(diag tfdiags.Diagnostic, sources map[string][]byte) *Diagnost
 					// If the test assertion is a binary expression, we'll include the human-readable
 					// formatted LHS and RHS values in the diagnostic snippet.
 					diagnostic.Snippet.TestAssertionExpr = formatRunBinaryDiag(ctx, fromExpr.Expression)
-					diagnostic.Snippet.TestAssertionExpr.ShowVerbose = testDiag.IsTestVerboseMode()
+					if diagnostic.Snippet.TestAssertionExpr != nil {
+						diagnostic.Snippet.TestAssertionExpr.ShowVerbose = testDiag.IsTestVerboseMode()
+					}
 				}
 
 			}

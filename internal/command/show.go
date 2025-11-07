@@ -150,7 +150,7 @@ func (c *ShowCommand) showFromLatestStateSnapshot() (*statefile.File, tfdiags.Di
 	var diags tfdiags.Diagnostics
 
 	// Load the backend
-	b, backendDiags := c.Backend(nil)
+	b, backendDiags := c.backend(".", c.viewType)
 	diags = diags.Append(backendDiags)
 	if backendDiags.HasErrors() {
 		return nil, diags
@@ -267,7 +267,7 @@ func (c *ShowCommand) getPlanFromPath(path string) (*plans.Plan, *cloudplan.Remo
 	}
 
 	if lp, ok := pf.Local(); ok {
-		plan, stateFile, config, err = getDataFromPlanfileReader(lp)
+		plan, stateFile, config, err = getDataFromPlanfileReader(lp, c.Meta.AllowExperimentalFeatures)
 	} else if cp, ok := pf.Cloud(); ok {
 		redacted := c.viewType != arguments.ViewJSON
 		jsonPlan, err = c.getDataFromCloudPlan(cp, redacted)
@@ -278,9 +278,9 @@ func (c *ShowCommand) getPlanFromPath(path string) (*plans.Plan, *cloudplan.Remo
 
 func (c *ShowCommand) getDataFromCloudPlan(plan *cloudplan.SavedPlanBookmark, redacted bool) (*cloudplan.RemotePlanJSON, error) {
 	// Set up the backend
-	b, backendDiags := c.Backend(nil)
-	if backendDiags.HasErrors() {
-		return nil, errUnusable(backendDiags.Err(), "cloud plan")
+	b, diags := c.backend(".", c.viewType)
+	if diags.HasErrors() {
+		return nil, errUnusable(diags.Err(), "cloud plan")
 	}
 	// Cloud plans only work if we're cloud.
 	cl, ok := b.(*cloud.Cloud)
@@ -297,7 +297,7 @@ func (c *ShowCommand) getDataFromCloudPlan(plan *cloudplan.SavedPlanBookmark, re
 }
 
 // getDataFromPlanfileReader returns a plan, statefile, and config, extracted from a local plan file.
-func getDataFromPlanfileReader(planReader *planfile.Reader) (*plans.Plan, *statefile.File, *configs.Config, error) {
+func getDataFromPlanfileReader(planReader *planfile.Reader, allowLanguageExperiments bool) (*plans.Plan, *statefile.File, *configs.Config, error) {
 	// Get plan
 	plan, err := planReader.ReadPlan()
 	if err != nil {
@@ -311,7 +311,7 @@ func getDataFromPlanfileReader(planReader *planfile.Reader) (*plans.Plan, *state
 	}
 
 	// Get config
-	config, diags := planReader.ReadConfig()
+	config, diags := planReader.ReadConfig(allowLanguageExperiments)
 	if diags.HasErrors() {
 		return nil, nil, nil, errUnusable(diags.Err(), "local plan")
 	}
@@ -338,9 +338,9 @@ func getStateFromPath(path string) (*statefile.File, error) {
 // getStateFromBackend returns the State for the current workspace, if available.
 func getStateFromBackend(b backend.Backend, workspace string) (*statefile.File, error) {
 	// Get the state store for the given workspace
-	stateStore, err := b.StateMgr(workspace)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to load state manager: %w", err)
+	stateStore, sDiags := b.StateMgr(workspace)
+	if sDiags.HasErrors() {
+		return nil, fmt.Errorf("Failed to load state manager: %w", sDiags.Err())
 	}
 
 	// Refresh the state store with the latest state snapshot from persistent storage

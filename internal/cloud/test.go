@@ -121,7 +121,7 @@ func (runner *TestSuiteRunner) Cancel() {
 	runner.Cancelled = true
 }
 
-func (runner *TestSuiteRunner) Test() (moduletest.Status, tfdiags.Diagnostics) {
+func (runner *TestSuiteRunner) Test(_ bool) (moduletest.Status, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	configDirectory, err := filepath.Abs(runner.ConfigDirectory)
@@ -354,7 +354,7 @@ func (runner *TestSuiteRunner) client(addr tfaddr.Module, id tfe.RegistryModuleI
 			return nil, nil, diags
 		}
 
-		token, err := cliConfigToken(addr.Package.Host, runner.Services)
+		token, err := CliConfigToken(addr.Package.Host, runner.Services)
 		if err != nil {
 			diags = diags.Append(tfdiags.AttributeValue(
 				tfdiags.Error,

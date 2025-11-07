@@ -42,7 +42,7 @@ import (
 
 var changesCmpOpts = cmp.Options{
 	ctydebug.CmpOptions,
-	cmpCollectionsSet,
+	collections.CmpOptions,
 	cmpopts.IgnoreUnexported(addrs.InputVariable{}),
 	cmpopts.IgnoreUnexported(states.ResourceInstanceObjectSrc{}),
 }
@@ -64,10 +64,23 @@ func TestApply(t *testing.T) {
 
 	tcs := map[string]struct {
 		path   string
+		skip   bool
 		state  *stackstate.State
 		store  *stacks_testing_provider.ResourceStore
 		cycles []TestCycle
 	}{
+		"built-in provider used not present in required": {
+			path: "with-built-in-provider",
+			cycles: []TestCycle{
+				{}, // plan, apply -> no diags
+			},
+		},
+		"built-in provider used and explicitly defined in required providers": {
+			path: "with-built-in-provider-explicitly-defined",
+			cycles: []TestCycle{
+				{}, // plan, apply -> no diags
+			},
+		},
 		"creating inputs and outputs": {
 			path: "component-input-output",
 			cycles: []TestCycle{
@@ -1972,7 +1985,7 @@ After applying this plan, Terraform will no longer manage these objects. You wil
 							Summary:  "No value for required variable",
 							Detail:   "The root input variable \"var.ephemeral\" is not set, and has no default value.",
 							Subject: &hcl.Range{
-								Filename: "git::https://example.com/test.git//with-single-input/ephemeral/ephemeral.tfstack.hcl",
+								Filename: "git::https://example.com/test.git//with-single-input/ephemeral/ephemeral.tfcomponent.hcl",
 								Start: hcl.Pos{
 									Line:   14,
 									Column: 1,
@@ -2217,10 +2230,78 @@ After applying this plan, Terraform will no longer manage these objects. You wil
 				},
 			},
 		},
+		"ephemeral-module-outputs": {
+			path: "ephemeral-module-output",
+			skip: true, // TODO(issues/37822): Enable this.
+			cycles: []TestCycle{
+				{
+					wantPlannedChanges: []stackplan.PlannedChange{
+						&stackplan.PlannedChangeApplyable{
+							Applyable: true,
+						},
+						&stackplan.PlannedChangeComponentInstance{
+							Addr:                mustAbsComponentInstance("component.ephemeral_in"),
+							PlanApplyable:       false,
+							PlanComplete:        true,
+							Action:              plans.Create,
+							RequiredComponents:  collections.NewSet(mustAbsComponent("component.ephemeral_out")),
+							PlannedInputValues:  make(map[string]plans.DynamicValue),
+							PlannedOutputValues: make(map[string]cty.Value),
+							PlannedCheckResults: new(states.CheckResults),
+							PlanTimestamp:       fakePlanTimestamp,
+						},
+						&stackplan.PlannedChangeComponentInstance{
+							Addr:               mustAbsComponentInstance("component.ephemeral_out"),
+							PlanApplyable:      false,
+							PlanComplete:       true,
+							Action:             plans.Create,
+							PlannedInputValues: make(map[string]plans.DynamicValue),
+							PlannedOutputValues: map[string]cty.Value{
+								"value": cty.DynamicVal, // ephemeral
+							},
+							PlannedCheckResults: new(states.CheckResults),
+							PlanTimestamp:       fakePlanTimestamp,
+						},
+						&stackplan.PlannedChangeHeader{
+							TerraformVersion: version.SemVer,
+						},
+						&stackplan.PlannedChangePlannedTimestamp{
+							PlannedTimestamp: fakePlanTimestamp,
+						},
+					},
+					wantAppliedChanges: []stackstate.AppliedChange{
+						&stackstate.AppliedChangeComponentInstance{
+							ComponentAddr:         mustAbsComponent("component.ephemeral_in"),
+							ComponentInstanceAddr: mustAbsComponentInstance("component.ephemeral_in"),
+							Dependencies: collections.NewSet[stackaddrs.AbsComponent](
+								mustAbsComponent("component.ephemeral_out"),
+							),
+							OutputValues: make(map[addrs.OutputValue]cty.Value),
+							InputVariables: map[addrs.InputVariable]cty.Value{
+								mustInputVariable("input"): cty.UnknownVal(cty.String), // ephemeral
+							},
+						},
+						&stackstate.AppliedChangeComponentInstance{
+							ComponentAddr:         mustAbsComponent("component.ephemeral_out"),
+							ComponentInstanceAddr: mustAbsComponentInstance("component.ephemeral_out"),
+							Dependents: collections.NewSet[stackaddrs.AbsComponent](
+								mustAbsComponent("component.ephemeral_in"),
+							),
+							OutputValues:   make(map[addrs.OutputValue]cty.Value),
+							InputVariables: make(map[addrs.InputVariable]cty.Value),
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tc := range tcs {
 		t.Run(name, func(t *testing.T) {
+			if tc.skip {
+				t.Skip()
+			}
+
 			ctx := context.Background()
 
 			lock := depsfile.NewLocks()
@@ -3848,7 +3929,7 @@ func TestApplyWithChangedInputValues(t *testing.T) {
 			tfdiags.Error,
 			"Inconsistent value for input variable during apply",
 			"The value for non-ephemeral input variable \"input\" was set to a different value during apply than was set during plan. Only ephemeral input variables can change between the plan and apply phases."),
-		expectDiagnostic(tfdiags.Error, "Invalid inputs for component", "Invalid input variable definition object: attribute \"input\": string required."),
+		expectDiagnostic(tfdiags.Error, "Invalid inputs for component", "Input variable \"input\" could not be evaluated, additional diagnostics elsewhere should provide mode detail."),
 	)
 
 	wantChanges := []stackstate.AppliedChange{
@@ -4273,7 +4354,7 @@ func TestApply_WithProviderFunctions(t *testing.T) {
 			After:  cty.StringVal("hello, world!"),
 		},
 	}
-	if diff := cmp.Diff(wantPlanChanges, planChanges, ctydebug.CmpOptions, cmpCollectionsSet); diff != "" {
+	if diff := cmp.Diff(wantPlanChanges, planChanges, changesCmpOpts); diff != "" {
 		t.Errorf("wrong changes\n%s", diff)
 	}
 

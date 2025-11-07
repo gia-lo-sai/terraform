@@ -100,6 +100,20 @@ func (m *Mock) ValidateDataResourceConfig(request ValidateDataResourceConfigRequ
 	return m.Provider.ValidateDataResourceConfig(request)
 }
 
+func (m *Mock) ValidateListResourceConfig(request ValidateListResourceConfigRequest) ValidateListResourceConfigResponse {
+	// We'll just pass this through to the underlying provider. The mock should
+	// support the same data source syntax as the original provider and we can
+	// call validate without needing to configure the provider first.
+	return m.Provider.ValidateListResourceConfig(request)
+}
+
+func (m *Mock) ValidateActionConfig(request ValidateActionConfigRequest) ValidateActionConfigResponse {
+	// We'll just pass this through to the underlying provider. The mock should
+	// support the same data source syntax as the original provider and we can
+	// call validate without needing to configure the provider first.
+	return m.Provider.ValidateActionConfig(request)
+}
+
 func (m *Mock) UpgradeResourceState(request UpgradeResourceStateRequest) (response UpgradeResourceStateResponse) {
 	// We can't do this from a mocked provider, so we just return whatever state
 	// is in the request back unchanged.
@@ -309,6 +323,10 @@ func (m *Mock) ImportResourceState(request ImportResourceStateRequest) (response
 	return response
 }
 
+func (m *Mock) GenerateResourceConfig(request GenerateResourceConfigRequest) (response GenerateResourceConfigResponse) {
+	panic("not implemented")
+}
+
 func (m *Mock) MoveResourceState(request MoveResourceStateRequest) MoveResourceStateResponse {
 	// The MoveResourceState operation happens offline, so we can just hand this
 	// off to the underlying provider.
@@ -404,6 +422,55 @@ func (m *Mock) CloseEphemeralResource(CloseEphemeralResourceRequest) CloseEpheme
 
 func (m *Mock) CallFunction(request CallFunctionRequest) CallFunctionResponse {
 	return m.Provider.CallFunction(request)
+}
+
+func (m *Mock) ListResource(request ListResourceRequest) ListResourceResponse {
+	return m.Provider.ListResource(request)
+}
+
+func (m *Mock) ValidateStateStoreConfig(req ValidateStateStoreConfigRequest) ValidateStateStoreConfigResponse {
+	return m.Provider.ValidateStateStoreConfig(req)
+}
+
+func (m *Mock) ConfigureStateStore(req ConfigureStateStoreRequest) ConfigureStateStoreResponse {
+	return m.Provider.ConfigureStateStore(req)
+}
+
+func (m *Mock) ReadStateBytes(req ReadStateBytesRequest) ReadStateBytesResponse {
+	return m.Provider.ReadStateBytes(req)
+}
+
+func (m *Mock) WriteStateBytes(req WriteStateBytesRequest) WriteStateBytesResponse {
+	return m.Provider.WriteStateBytes(req)
+}
+
+func (m *Mock) LockState(req LockStateRequest) LockStateResponse {
+	return m.Provider.LockState(req)
+}
+
+func (m *Mock) UnlockState(req UnlockStateRequest) UnlockStateResponse {
+	return m.Provider.UnlockState(req)
+}
+
+func (m *Mock) GetStates(req GetStatesRequest) GetStatesResponse {
+	return m.Provider.GetStates(req)
+}
+
+func (m *Mock) DeleteState(req DeleteStateRequest) DeleteStateResponse {
+	return m.Provider.DeleteState(req)
+}
+
+func (m *Mock) PlanAction(request PlanActionRequest) PlanActionResponse {
+	return PlanActionResponse{}
+}
+
+func (m *Mock) InvokeAction(request InvokeActionRequest) InvokeActionResponse {
+	return InvokeActionResponse{
+		Events: func(yield func(InvokeActionEvent) bool) {
+			yield(InvokeActionEvent_Completed{})
+		},
+		Diagnostics: nil,
+	}
 }
 
 func (m *Mock) Close() error {

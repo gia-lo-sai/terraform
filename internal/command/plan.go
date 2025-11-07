@@ -124,18 +124,9 @@ func (c *PlanCommand) PrepareBackend(args *arguments.State, viewType arguments.V
 	// difficult but would make their use easier to understand.
 	c.Meta.applyStateArguments(args)
 
-	backendConfig, diags := c.loadBackendConfig(".")
-	if diags.HasErrors() {
-		return nil, diags
-	}
-
 	// Load the backend
-	be, beDiags := c.Backend(&BackendOpts{
-		Config:   backendConfig,
-		ViewType: viewType,
-	})
-	diags = diags.Append(beDiags)
-	if beDiags.HasErrors() {
+	be, diags := c.backend(".", viewType)
+	if diags.HasErrors() {
 		return nil, diags
 	}
 
@@ -164,6 +155,7 @@ func (c *PlanCommand) OperationRequest(
 	opReq.ForceReplace = args.ForceReplace
 	opReq.Type = backendrun.OperationTypePlan
 	opReq.View = view.Operation()
+	opReq.ActionTargets = args.ActionTargets
 
 	// EXPERIMENTAL: maybe enable deferred actions
 	if c.AllowExperimentalFeatures {

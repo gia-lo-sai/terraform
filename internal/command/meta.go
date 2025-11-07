@@ -72,11 +72,18 @@ type Meta struct {
 	// do some default behavior instead if so, rather than panicking.
 	Streams *terminal.Streams
 
-	View *views.View
+	// View is the newer abstraction used for output from Terraform operations.
+	// View allows output to be rendered differently, depending on CLI settings.
+	// Currently the only non-default option is machine-readable output using  the`-json` flag.
+	// We are slowly migrating Terraform operations away from using `cli.Ui` and towards
+	// using `views.View`, and so far only the commands with machine-readable output features are
+	// migrated.
+	// For more information see: https://github.com/hashicorp/terraform/issues/37439
+	View *views.View // View for output
 
 	Color            bool     // True if output should be colored
 	GlobalPluginDirs []string // Additional paths to search for plugins
-	Ui               cli.Ui   // Ui for output
+	Ui               cli.Ui   // Ui for output. See View above.
 
 	// Services provides access to remote endpoint information for
 	// "terraform-native' services running at a specific user-facing hostname.
@@ -202,7 +209,7 @@ type Meta struct {
 	configLoader *configload.Loader
 
 	// backendState is the currently active backend state
-	backendState *workdir.BackendState
+	backendState *workdir.BackendConfigState
 
 	// Variables for the context (private)
 	variableArgs arguments.FlagNameValueSlice
@@ -265,6 +272,9 @@ type Meta struct {
 	// Used with commands which write state to allow users to write remote
 	// state even if the remote and local Terraform versions don't match.
 	ignoreRemoteVersion bool
+
+	// set to true if query files should be parsed
+	includeQueryFiles bool
 }
 
 type testingOverrides struct {
@@ -536,7 +546,7 @@ func (m *Meta) contextOpts() (*terraform.ContextOpts, error) {
 		opts.Provisioners = m.testingOverrides.Provisioners
 	} else {
 		var providerFactories map[addrs.Provider]providers.Factory
-		providerFactories, err = m.providerFactories()
+		providerFactories, err = m.ProviderFactories()
 		opts.Providers = providerFactories
 		opts.Provisioners = m.provisionerFactories()
 	}

@@ -68,19 +68,10 @@ func (c *WorkspaceNewCommand) Run(args []string) int {
 
 	var diags tfdiags.Diagnostics
 
-	backendConfig, backendDiags := c.loadBackendConfig(configPath)
-	diags = diags.Append(backendDiags)
-	if diags.HasErrors() {
-		c.showDiagnostics(diags)
-		return 1
-	}
-
 	// Load the backend
-	b, backendDiags := c.Backend(&BackendOpts{
-		Config: backendConfig,
-	})
-	diags = diags.Append(backendDiags)
-	if backendDiags.HasErrors() {
+	view := arguments.ViewHuman
+	b, diags := c.backend(configPath, view)
+	if diags.HasErrors() {
 		c.showDiagnostics(diags)
 		return 1
 	}
@@ -88,11 +79,13 @@ func (c *WorkspaceNewCommand) Run(args []string) int {
 	// This command will not write state
 	c.ignoreRemoteVersionConflict(b)
 
-	workspaces, err := b.Workspaces()
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to get configured named states: %s", err))
+	workspaces, wDiags := b.Workspaces()
+	if wDiags.HasErrors() {
+		c.Ui.Error(fmt.Sprintf("Failed to get configured named states: %s", wDiags.Err()))
 		return 1
 	}
+	c.showDiagnostics(diags) // output warnings, if any
+
 	for _, ws := range workspaces {
 		if workspace == ws {
 			c.Ui.Error(fmt.Sprintf(envExists, workspace))
@@ -100,9 +93,9 @@ func (c *WorkspaceNewCommand) Run(args []string) int {
 		}
 	}
 
-	_, err = b.StateMgr(workspace)
-	if err != nil {
-		c.Ui.Error(err.Error())
+	_, sDiags := b.StateMgr(workspace)
+	if sDiags.HasErrors() {
+		c.Ui.Error(sDiags.Err().Error())
 		return 1
 	}
 
@@ -121,9 +114,9 @@ func (c *WorkspaceNewCommand) Run(args []string) int {
 	}
 
 	// load the new Backend state
-	stateMgr, err := b.StateMgr(workspace)
-	if err != nil {
-		c.Ui.Error(err.Error())
+	stateMgr, sDiags := b.StateMgr(workspace)
+	if sDiags.HasErrors() {
+		c.Ui.Error(sDiags.Err().Error())
 		return 1
 	}
 

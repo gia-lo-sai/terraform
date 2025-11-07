@@ -470,6 +470,54 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 
 		resp := provider.ValidateEphemeralResourceConfig(req)
 		diags = diags.Append(resp.Diagnostics.InConfigBody(n.Config.Config, n.Addr.String()))
+	case addrs.ListResourceMode:
+		schema := providerSchema.SchemaForListResourceType(n.Config.Type)
+		if schema.IsNil() {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid list resource",
+				Detail:   fmt.Sprintf("The provider %s does not support list resource %q.", n.Provider().ForDisplay(), n.Config.Type),
+				Subject:  &n.Config.TypeRange,
+			})
+			return diags
+		}
+
+		blockVal, _, valDiags := ctx.EvaluateBlock(n.Config.Config, schema.FullSchema, nil, keyData)
+		diags = diags.Append(valDiags)
+		if valDiags.HasErrors() {
+			return diags
+		}
+
+		limit, _, limitDiags := newLimitEvaluator(true).EvaluateExpr(ctx, n.Config.List.Limit)
+		diags = diags.Append(limitDiags)
+		if limitDiags.HasErrors() {
+			return diags
+		}
+
+		includeResource, _, includeDiags := newIncludeRscEvaluator(true).EvaluateExpr(ctx, n.Config.List.IncludeResource)
+		diags = diags.Append(includeDiags)
+		if includeDiags.HasErrors() {
+			return diags
+		}
+
+		// Use unmarked value for validate request
+		unmarkedBlockVal, _ := blockVal.UnmarkDeep()
+
+		// if the config value is null, we still want to send a full object with all attributes being null
+		if !unmarkedBlockVal.IsNull() && unmarkedBlockVal.GetAttr("config").IsNull() {
+			mp := unmarkedBlockVal.AsValueMap()
+			mp["config"] = schema.ConfigSchema.EmptyValue()
+			unmarkedBlockVal = cty.ObjectVal(mp)
+		}
+		req := providers.ValidateListResourceConfigRequest{
+			TypeName:              n.Config.Type,
+			Config:                unmarkedBlockVal,
+			IncludeResourceObject: includeResource,
+			Limit:                 limit,
+		}
+
+		resp := provider.ValidateListResourceConfig(req)
+		diags = diags.Append(resp.Diagnostics.InConfigBody(n.Config.Config, n.Addr.String()))
 	}
 
 	return diags
@@ -761,6 +809,21 @@ func validateDependsOn(ctx EvalContext, dependsOn []hcl.Traversal) (diags tfdiag
 				Detail:   "References in depends_on must be to a whole object (resource, etc), not to an attribute of an object.",
 				Subject:  ref.Remaining.SourceRange().Ptr(),
 			})
+		}
+
+		// We don't allow depends_on on actions because their ordering is depending on the resource
+		// that triggers them, therefore users should use a depends_on on the resource instead.
+
+		if ref != nil {
+			switch ref.Subject.(type) {
+			case addrs.Action, addrs.ActionInstance:
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid depends_on reference",
+					Detail:   "Actions can not be referenced in depends_on. Use depends_on on the resource that triggers the action instead.",
+					Subject:  traversal.SourceRange().Ptr(),
+				})
+			}
 		}
 
 		// The ref must also refer to something that exists. To test that,

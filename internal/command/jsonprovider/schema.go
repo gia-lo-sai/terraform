@@ -68,3 +68,22 @@ func marshalIdentitySchemas(schemas map[string]providers.Schema) map[string]*Ide
 
 	return ret
 }
+
+type ActionSchema struct {
+	ConfigSchema *Block `json:"block,omitempty"`
+}
+
+func marshalActionSchemas(schemas map[string]providers.ActionSchema) map[string]*ActionSchema {
+	ret := make(map[string]*ActionSchema, len(schemas))
+	for name, schema := range schemas {
+		ret[name] = marshalActionSchema(schema)
+	}
+	return ret
+}
+
+func marshalActionSchema(schema providers.ActionSchema) *ActionSchema {
+	return &ActionSchema{
+		ConfigSchema: marshalBlock(schema.ConfigSchema),
+	}
+
+}

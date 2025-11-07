@@ -185,6 +185,19 @@ func FromJsonViewsOutput(output viewsjson.Output) Change {
 	}
 }
 
+func FromJsonActionInvocation(actionInvocation jsonplan.ActionInvocation) Change {
+	return Change{
+		Before:          unmarshalGeneric(actionInvocation.ConfigValues),
+		After:           unmarshalGeneric(actionInvocation.ConfigValues),
+		Unknown:         unmarshalGeneric(actionInvocation.ConfigUnknown),
+		BeforeSensitive: unmarshalGeneric(actionInvocation.ConfigSensitive),
+		AfterSensitive:  unmarshalGeneric(actionInvocation.ConfigSensitive),
+
+		ReplacePaths:       attribute_path.Empty(false),
+		RelevantAttributes: attribute_path.AlwaysMatcher(),
+	}
+}
+
 // CalculateAction does a very simple analysis to make the best guess at the
 // action this change describes. For complex types such as objects, maps, lists,
 // or sets it is likely more efficient to work out the action directly instead

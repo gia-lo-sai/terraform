@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/states/statemgr"
 	"github.com/hashicorp/terraform/internal/terraform"
+	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
 type backendMigrateOpts struct {
@@ -186,10 +187,13 @@ func (m *Meta) backendMigrateState_S_S(opts *backendMigrateOpts) error {
 	}
 
 	// Read all the states
-	sourceWorkspaces, err := opts.Source.Workspaces()
-	if err != nil {
+	sourceWorkspaces, wDiags := opts.Source.Workspaces()
+	if wDiags.HasErrors() {
 		return fmt.Errorf(strings.TrimSpace(
-			errMigrateLoadStates), opts.SourceType, err)
+			errMigrateLoadStates), opts.SourceType, wDiags.Err())
+	}
+	if wDiags.HasWarnings() {
+		log.Printf("[WARN] backendMigrateState_S_S: warning(s) returned when getting workspaces from source backend: %s", wDiags.ErrWithWarnings())
 	}
 
 	// Sort the states so they're always copied alphabetically
@@ -260,10 +264,10 @@ func (m *Meta) backendMigrateState_S_s(opts *backendMigrateOpts) error {
 func (m *Meta) backendMigrateState_s_s(opts *backendMigrateOpts) error {
 	log.Printf("[INFO] backendMigrateState: single-to-single migrating %q workspace to %q workspace", opts.sourceWorkspace, opts.destinationWorkspace)
 
-	sourceState, err := opts.Source.StateMgr(opts.sourceWorkspace)
-	if err != nil {
+	sourceState, sDiags := opts.Source.StateMgr(opts.sourceWorkspace)
+	if sDiags.HasErrors() {
 		return fmt.Errorf(strings.TrimSpace(
-			errMigrateSingleLoadDefault), opts.SourceType, err)
+			errMigrateSingleLoadDefault), opts.SourceType, sDiags.Err())
 	}
 	if err := sourceState.RefreshState(); err != nil {
 		return fmt.Errorf(strings.TrimSpace(
@@ -276,8 +280,9 @@ func (m *Meta) backendMigrateState_s_s(opts *backendMigrateOpts) error {
 		return nil
 	}
 
-	destinationState, err := opts.Destination.StateMgr(opts.destinationWorkspace)
-	if err == backend.ErrDefaultWorkspaceNotSupported {
+	var err error
+	destinationState, sDiags := opts.Destination.StateMgr(opts.destinationWorkspace)
+	if sDiags.HasErrors() && sDiags.Err().Error() == backend.ErrDefaultWorkspaceNotSupported.Error() {
 		// If the backend doesn't support using the default state, we ask the user
 		// for a new name and migrate the default state to the given named state.
 		destinationState, err = func() (statemgr.Full, error) {
@@ -290,9 +295,9 @@ func (m *Meta) backendMigrateState_s_s(opts *backendMigrateOpts) error {
 			// Update the name of the destination state.
 			opts.destinationWorkspace = name
 
-			destinationState, err := opts.Destination.StateMgr(opts.destinationWorkspace)
-			if err != nil {
-				return nil, err
+			destinationState, sDiags := opts.Destination.StateMgr(opts.destinationWorkspace)
+			if sDiags.HasErrors() {
+				return nil, sDiags.Err()
 			}
 
 			// Ignore invalid workspace name as it is irrelevant in this context.
@@ -543,18 +548,22 @@ func (m *Meta) backendMigrateNonEmptyConfirm(
 
 func retrieveWorkspaces(back backend.Backend, sourceType string) ([]string, bool, error) {
 	var singleState bool
-	var err error
-	workspaces, err := back.Workspaces()
-	if err == backend.ErrWorkspacesNotSupported {
+	var diags tfdiags.Diagnostics
+
+	workspaces, diags := back.Workspaces()
+	if diags.HasErrors() && diags.Err().Error() == backend.ErrWorkspacesNotSupported.Error() {
 		singleState = true
-		err = nil
+		diags = nil
 	}
-	if err != nil {
+	if diags.HasErrors() {
 		return nil, singleState, fmt.Errorf(strings.TrimSpace(
-			errMigrateLoadStates), sourceType, err)
+			errMigrateLoadStates), sourceType, diags.Err())
+	}
+	if diags.HasWarnings() {
+		log.Printf("[WARN] retrieveWorkspaces: warning(s) returned when getting workspaces: %s", diags.ErrWithWarnings())
 	}
 
-	return workspaces, singleState, err
+	return workspaces, singleState, diags.Err()
 }
 
 func (m *Meta) backendMigrateTFC(opts *backendMigrateOpts) error {
@@ -601,9 +610,9 @@ func (m *Meta) backendMigrateTFC(opts *backendMigrateOpts) error {
 
 		// If the current workspace is has no state we do not need to ask
 		// if they want to migrate the state.
-		sourceState, err := opts.Source.StateMgr(currentWorkspace)
-		if err != nil {
-			return err
+		sourceState, sDiags := opts.Source.StateMgr(currentWorkspace)
+		if sDiags.HasErrors() {
+			return sDiags.Err()
 		}
 		if err := sourceState.RefreshState(); err != nil {
 			return err
@@ -687,10 +696,10 @@ func (m *Meta) backendMigrateState_S_TFC(opts *backendMigrateOpts, sourceWorkspa
 		if sourceWorkspaces[i] == backend.DefaultStateName {
 			// For the default workspace we want to look to see if there is any state
 			// before we ask for a workspace name to migrate the default workspace into.
-			sourceState, err := opts.Source.StateMgr(backend.DefaultStateName)
-			if err != nil {
+			sourceState, sDiags := opts.Source.StateMgr(backend.DefaultStateName)
+			if sDiags.HasErrors() {
 				return fmt.Errorf(strings.TrimSpace(
-					errMigrateSingleLoadDefault), opts.SourceType, err)
+					errMigrateSingleLoadDefault), opts.SourceType, sDiags.Err())
 			}
 			// RefreshState is what actually pulls the state to be evaluated.
 			if err := sourceState.RefreshState(); err != nil {
@@ -769,9 +778,12 @@ func (m *Meta) backendMigrateState_S_TFC(opts *backendMigrateOpts, sourceWorkspa
 
 	// After migrating multiple workspaces, we need to reselect the current workspace as it may
 	// have been renamed. Query the backend first to be sure it now exists.
-	workspaces, err := opts.Destination.Workspaces()
-	if err != nil {
-		return err
+	workspaces, diags := opts.Destination.Workspaces()
+	if diags.HasErrors() {
+		return diags.Err()
+	}
+	if diags.HasWarnings() {
+		log.Printf("[WARN] backendMigrateState_S_TFC: warning(s) returned when getting workspaces from destination backend: %s", diags.ErrWithWarnings())
 	}
 
 	var workspacePresent bool

@@ -36,7 +36,7 @@ func TestLoadConfigDirErrors(t *testing.T) {
 	})
 
 	wantDiags := tfdiags.Diagnostics{
-		tfdiags.Sourceless(tfdiags.Error, "Component exists for removed block", "A removed block for component \"a\" was declared without an index, but a component block with the same name was declared at git::https://example.com/errored.git//main.tfstack.hcl:10,1-14.\n\nA removed block without an index indicates that the component and all instances were removed from the configuration, and this is not the case."),
+		tfdiags.Sourceless(tfdiags.Error, "Component exists for removed block", "A removed block for component \"a\" was declared without an index, but a component block with the same name was declared at git::https://example.com/errored.git//main.tfcomponent.hcl:10,1-14.\n\nA removed block without an index indicates that the component and all instances were removed from the configuration, and this is not the case."),
 		tfdiags.Sourceless(tfdiags.Error, "Invalid for_each expression", "A removed block with a for_each expression must reference that expression within the `from` attribute."),
 		tfdiags.Sourceless(tfdiags.Error, "Invalid for_each expression", "A removed block with a for_each expression must reference that expression within the `from` attribute."),
 	}
@@ -245,4 +245,42 @@ func TestLoadConfigDirBasics(t *testing.T) {
 		})
 	})
 	// TODO: More thorough testing!
+}
+
+func TestOmittingBuiltInProviders(t *testing.T) {
+	bundle, err := sourcebundle.OpenDir("testdata/basics-bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootAddr := sourceaddrs.MustParseSource("git::https://example.com/builtin.git").(sourceaddrs.RemoteSource)
+	config, diags := LoadConfigDir(rootAddr, bundle)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diags.NonFatalErr().Error())
+	}
+
+	t.Run("built-in providers do NOT have to be listed in required providers", func(t *testing.T) {
+		if got, want := len(config.Root.Stack.OutputValues), 1; got != want {
+			t.Errorf("wrong number of output values %d; want %d", got, want)
+		}
+
+		t.Run("greeting", func(t *testing.T) {
+			cfg, ok := config.Root.Stack.OutputValues["greeting"]
+			if !ok {
+				t.Fatal("Root stack config has no output value named \"greeting\".")
+			}
+			if got, want := cfg.Name, "greeting"; got != want {
+				t.Errorf("wrong name\ngot:  %s\nwant: %s", got, want)
+			}
+			if got, want := cfg.Type.Constraint, cty.String; got != want {
+				t.Errorf("wrong name\ngot:  %#v\nwant: %#v", got, want)
+			}
+			if got, want := cfg.Sensitive, false; got != want {
+				t.Errorf("wrong sensitive\ngot:  %#v\nwant: %#v", got, want)
+			}
+			if got, want := cfg.Ephemeral, false; got != want {
+				t.Errorf("wrong ephemeral\ngot:  %#v\nwant: %#v", got, want)
+			}
+		})
+	})
 }

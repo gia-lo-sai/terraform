@@ -87,6 +87,11 @@ type NodeAbstractResource struct {
 	generateConfigPath string
 
 	forceCreateBeforeDestroy bool
+
+	// overridePreventDestroy is set during test cleanup operations to allow
+	// tests to clean up any created infrastructure regardless of this setting
+	// in the configuration.
+	overridePreventDestroy bool
 }
 
 var (
@@ -213,6 +218,17 @@ func (n *NodeAbstractResource) References() []*addrs.Reference {
 					log.Printf("[WARN] no schema for provisioner %q is attached to %s, so provisioner block references cannot be detected", p.Type, n.Name())
 				}
 				refs, _ = langrefs.ReferencesInBlock(addrs.ParseRef, p.Config, schema)
+				result = append(result, refs...)
+			}
+		}
+
+		if c.List != nil {
+			if c.List.IncludeResource != nil {
+				refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, c.List.IncludeResource)
+				result = append(result, refs...)
+			}
+			if c.List.Limit != nil {
+				refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, c.List.Limit)
 				result = append(result, refs...)
 			}
 		}

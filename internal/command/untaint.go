@@ -56,7 +56,8 @@ func (c *UntaintCommand) Run(args []string) int {
 	}
 
 	// Load the backend
-	b, backendDiags := c.Backend(nil)
+	view := arguments.ViewHuman
+	b, backendDiags := c.backend(".", view)
 	diags = diags.Append(backendDiags)
 	if backendDiags.HasErrors() {
 		c.showDiagnostics(diags)
@@ -79,9 +80,9 @@ func (c *UntaintCommand) Run(args []string) int {
 	}
 
 	// Get the state
-	stateMgr, err := b.StateMgr(workspace)
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to load state: %s", err))
+	stateMgr, sDiags := b.StateMgr(workspace)
+	if sDiags.HasErrors() {
+		c.Ui.Error(fmt.Sprintf("Failed to load state: %s", sDiags.Err()))
 		return 1
 	}
 

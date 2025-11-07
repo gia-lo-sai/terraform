@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log"
 
+	tfaddr "github.com/hashicorp/terraform-registry-address"
 	"github.com/zclconf/go-cty/cty"
 
-	tfaddr "github.com/hashicorp/terraform-registry-address"
 	"github.com/hashicorp/terraform/internal/providers"
 )
 
@@ -35,6 +35,7 @@ func (p *Provider) GetProviderSchema() providers.GetProviderSchemaResponse {
 			"terraform_data": dataStoreResourceSchema(),
 		},
 		EphemeralResourceTypes: map[string]providers.Schema{},
+		ListResourceTypes:      map[string]providers.Schema{},
 		Functions: map[string]providers.FunctionDecl{
 			"encode_tfvars": {
 				Summary:     "Produce a string representation of an object using the same syntax as for `.tfvars` files",
@@ -72,6 +73,8 @@ func (p *Provider) GetProviderSchema() providers.GetProviderSchemaResponse {
 				ReturnType: cty.String,
 			},
 		},
+		StateStores: map[string]providers.Schema{},
+		Actions:     map[string]providers.ActionSchema{},
 	}
 	providers.SchemaCache.Set(tfaddr.NewProvider(tfaddr.BuiltInProviderHost, tfaddr.BuiltInProviderNamespace, "terraform"), resp)
 	return resp
@@ -113,6 +116,12 @@ func (p *Provider) ValidateDataResourceConfig(req providers.ValidateDataResource
 	return res
 }
 
+func (p *Provider) ValidateListResourceConfig(req providers.ValidateListResourceConfigRequest) providers.ValidateListResourceConfigResponse {
+	var resp providers.ValidateListResourceConfigResponse
+	resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unsupported list resource type %q", req.TypeName))
+	return resp
+}
+
 // Configure configures and initializes the provider.
 func (p *Provider) ConfigureProvider(providers.ConfigureProviderRequest) providers.ConfigureProviderResponse {
 	// At this moment there is nothing to configure for the terraform provider,
@@ -138,6 +147,10 @@ func (p *Provider) ReadDataSource(req providers.ReadDataSourceRequest) providers
 	res.Diagnostics = diags
 
 	return res
+}
+
+func (p *Provider) GenerateResourceConfig(providers.GenerateResourceConfigRequest) providers.GenerateResourceConfigResponse {
+	panic("not implemented")
 }
 
 // Stop is called when the provider should halt any in-flight actions.
@@ -262,6 +275,93 @@ func (p *Provider) CallFunction(req providers.CallFunctionRequest) providers.Cal
 	return providers.CallFunctionResponse{
 		Result: result,
 	}
+}
+
+func (p *Provider) ListResource(req providers.ListResourceRequest) providers.ListResourceResponse {
+	var resp providers.ListResourceResponse
+	resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unsupported list resource type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) ValidateStateStoreConfig(req providers.ValidateStateStoreConfigRequest) providers.ValidateStateStoreConfigResponse {
+	var resp providers.ValidateStateStoreConfigResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) ConfigureStateStore(req providers.ConfigureStateStoreRequest) providers.ConfigureStateStoreResponse {
+	var resp providers.ConfigureStateStoreResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) ReadStateBytes(req providers.ReadStateBytesRequest) providers.ReadStateBytesResponse {
+	var resp providers.ReadStateBytesResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) WriteStateBytes(req providers.WriteStateBytesRequest) providers.WriteStateBytesResponse {
+	var resp providers.WriteStateBytesResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) LockState(req providers.LockStateRequest) providers.LockStateResponse {
+	var resp providers.LockStateResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) UnlockState(req providers.UnlockStateRequest) providers.UnlockStateResponse {
+	var resp providers.UnlockStateResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) GetStates(req providers.GetStatesRequest) providers.GetStatesResponse {
+	var resp providers.GetStatesResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) DeleteState(req providers.DeleteStateRequest) providers.DeleteStateResponse {
+	var resp providers.DeleteStateResponse
+	resp.Diagnostics.Append(fmt.Errorf("unsupported state store type %q", req.TypeName))
+	return resp
+}
+
+func (p *Provider) PlanAction(req providers.PlanActionRequest) providers.PlanActionResponse {
+	var resp providers.PlanActionResponse
+
+	switch req.ActionType {
+	default:
+		resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unsupported action %q", req.ActionType))
+	}
+
+	return resp
+}
+
+func (p *Provider) InvokeAction(req providers.InvokeActionRequest) providers.InvokeActionResponse {
+	var resp providers.InvokeActionResponse
+
+	switch req.ActionType {
+	default:
+		resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unsupported action %q", req.ActionType))
+	}
+
+	return resp
+}
+
+func (p *Provider) ValidateActionConfig(req providers.ValidateActionConfigRequest) providers.ValidateActionConfigResponse {
+	var resp providers.ValidateActionConfigResponse
+
+	switch req.TypeName {
+	default:
+		resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unsupported action %q", req.TypeName))
+	}
+
+	return resp
 }
 
 // Close is a noop for this provider, since it's run in-process.

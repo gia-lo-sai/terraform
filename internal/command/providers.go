@@ -10,6 +10,7 @@ import (
 
 	"github.com/xlab/treeprint"
 
+	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/getproviders"
 	"github.com/hashicorp/terraform/internal/tfdiags"
@@ -81,9 +82,7 @@ func (c *ProvidersCommand) Run(args []string) int {
 	}
 
 	// Load the backend
-	b, backendDiags := c.Backend(&BackendOpts{
-		Config: config.Module.Backend,
-	})
+	b, backendDiags := c.backend(".", arguments.ViewHuman)
 	diags = diags.Append(backendDiags)
 	if backendDiags.HasErrors() {
 		c.showDiagnostics(diags)
@@ -99,9 +98,9 @@ func (c *ProvidersCommand) Run(args []string) int {
 		c.Ui.Error(fmt.Sprintf("Error selecting workspace: %s", err))
 		return 1
 	}
-	s, err := b.StateMgr(env)
-	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Failed to load state: %s", err))
+	s, sDiags := b.StateMgr(env)
+	if sDiags.HasErrors() {
+		c.Ui.Error(fmt.Sprintf("Failed to load state: %s", sDiags.Err()))
 		return 1
 	}
 	if err := s.RefreshState(); err != nil {

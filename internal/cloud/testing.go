@@ -172,9 +172,9 @@ func testCloudState(t *testing.T) *State {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	raw, err := b.StateMgr(testBackendSingleWorkspaceName)
-	if err != nil {
-		t.Fatalf("error: %v", err)
+	raw, sDiags := b.StateMgr(testBackendSingleWorkspaceName)
+	if sDiags.HasErrors() {
+		t.Fatalf("error: %v", sDiags.Err())
 	}
 
 	return raw.(*State)
@@ -276,6 +276,7 @@ func testBackend(t *testing.T, obj cty.Value, handlers map[string]func(http.Resp
 	b.client.TaskStages = mc.TaskStages
 	b.client.PolicySetOutcomes = mc.PolicySetOutcomes
 	b.client.PolicyChecks = mc.PolicyChecks
+	b.client.QueryRuns = mc.QueryRuns
 	b.client.Runs = mc.Runs
 	b.client.RunEvents = mc.RunEvents
 	b.client.StateVersions = mc.StateVersions
@@ -348,6 +349,7 @@ func testUnconfiguredBackend(t *testing.T) (*Cloud, func()) {
 	b.client.Plans = mc.Plans
 	b.client.PolicySetOutcomes = mc.PolicySetOutcomes
 	b.client.PolicyChecks = mc.PolicyChecks
+	b.client.QueryRuns = mc.QueryRuns
 	b.client.Runs = mc.Runs
 	b.client.RunEvents = mc.RunEvents
 	b.client.StateVersions = mc.StateVersions

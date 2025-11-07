@@ -353,8 +353,9 @@ func (m *Meta) registerSynthConfigSource(filename string, src []byte) {
 func (m *Meta) initConfigLoader() (*configload.Loader, error) {
 	if m.configLoader == nil {
 		loader, err := configload.NewLoader(&configload.Config{
-			ModulesDir: m.modulesDir(),
-			Services:   m.Services,
+			ModulesDir:        m.modulesDir(),
+			Services:          m.Services,
+			IncludeQueryFiles: m.includeQueryFiles,
 		})
 		if err != nil {
 			return nil, err

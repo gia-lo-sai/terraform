@@ -297,7 +297,18 @@ func (d *evaluationStateData) GetInputVariable(addr addrs.InputVariable, rng tfd
 		return ret, diags
 	}
 
-	val := d.Evaluator.NamedValues.GetInputVariableValue(d.ModulePath.InputVariable(addr.Name))
+	var val cty.Value
+	if target := d.ModulePath.InputVariable(addr.Name); !d.Evaluator.NamedValues.HasInputVariableValue(target) {
+		val = cty.DynamicVal
+		diags = diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Reference to uninitialized variable",
+			Detail:   fmt.Sprintf("The variable %s was not processed by the most recent operation, this likely means the previous operation either failed or was incomplete due to targeting.", addr),
+			Subject:  rng.ToHCL().Ptr(),
+		})
+	} else {
+		val = d.Evaluator.NamedValues.GetInputVariableValue(target)
+	}
 
 	// Mark if sensitive and/or ephemeral
 	if config.Sensitive {
@@ -342,8 +353,17 @@ func (d *evaluationStateData) GetLocalValue(addr addrs.LocalValue, rng tfdiags.S
 		return cty.DynamicVal, diags
 	}
 
-	val := d.Evaluator.NamedValues.GetLocalValue(addr.Absolute(d.ModulePath))
-	return val, diags
+	target := addr.Absolute(d.ModulePath)
+	if !d.Evaluator.NamedValues.HasLocalValue(target) {
+		return cty.DynamicVal, diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Reference to uninitialized local value",
+			Detail:   fmt.Sprintf("The local value %s was not processed by the most recent operation, this likely means the previous operation either failed or was incomplete due to targeting.", addr),
+			Subject:  rng.ToHCL().Ptr(),
+		})
+	}
+
+	return d.Evaluator.NamedValues.GetLocalValue(target), diags
 }
 
 func (d *evaluationStateData) GetModule(addr addrs.ModuleCall, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
@@ -430,7 +450,7 @@ func (d *evaluationStateData) GetModule(addr addrs.ModuleCall, rng tfdiags.Sourc
 		namedVals := d.Evaluator.NamedValues
 		moduleInstAddr := absAddr.Instance(instKey)
 		attrs := make(map[string]cty.Value, len(outputConfigs))
-		for name := range outputConfigs {
+		for name, cfg := range outputConfigs {
 			outputAddr := moduleInstAddr.OutputValue(name)
 
 			// Although we do typically expect the graph dependencies to
@@ -446,6 +466,9 @@ func (d *evaluationStateData) GetModule(addr addrs.ModuleCall, rng tfdiags.Sourc
 				continue
 			}
 			outputVal := namedVals.GetOutputValue(outputAddr)
+			if cfg.Sensitive {
+				outputVal = outputVal.Mark(marks.Sensitive)
+			}
 			attrs[name] = outputVal
 		}
 
@@ -538,6 +561,26 @@ func (d *evaluationStateData) GetResource(addr addrs.Resource, rng tfdiags.Sourc
 	// result for _all_ of its work, rather than continuing to duplicate a bunch
 	// of the logic we've tried to encapsulate over ther already.
 	if d.Operation == walkPlan || d.Operation == walkApply {
+		if !d.Evaluator.Instances.ResourceInstanceExpanded(addr.Absolute(moduleAddr)) {
+			// Then we've asked for a resource that hasn't been evaluated yet.
+			// This means that either something has gone wrong in the graph or
+			// the console or test command has an errored plan and is attempting
+			// to load an invalid resource from it.
+
+			unknownVal := cty.DynamicVal
+
+			// If an ephemeral resource is deferred we need to mark the returned unknown value as ephemeral
+			if addr.Mode == addrs.EphemeralResourceMode {
+				unknownVal = unknownVal.Mark(marks.Ephemeral)
+			}
+			return unknownVal, diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Reference to uninitialized resource",
+				Detail:   fmt.Sprintf("The resource %s was not processed by the most recent operation, this likely means the previous operation either failed or was incomplete due to targeting.", addr),
+				Subject:  rng.ToHCL().Ptr(),
+			})
+		}
+
 		if _, _, hasUnknownKeys := d.Evaluator.Instances.ResourceInstanceKeys(addr.Absolute(moduleAddr)); hasUnknownKeys {
 			// There really isn't anything interesting we can do in this situation,
 			// because it means we have an unknown for_each/count, in which case
@@ -575,7 +618,8 @@ func (d *evaluationStateData) GetResource(addr addrs.Resource, rng tfdiags.Sourc
 	}
 	ty := schema.Body.ImpliedType()
 
-	if addr.Mode == addrs.EphemeralResourceMode {
+	switch addr.Mode {
+	case addrs.EphemeralResourceMode:
 		// FIXME: This does not yet work with deferrals, and it would be nice to
 		// find some way to refactor this so that the following code is not so
 		// tethered to the current implementation details. Instead we should
@@ -584,11 +628,103 @@ func (d *evaluationStateData) GetResource(addr addrs.Resource, rng tfdiags.Sourc
 		// then retrieving the value for each instance to assemble into the
 		// result, using some per-resource-mode logic maintained elsewhere.
 		return d.getEphemeralResource(addr, rng)
+	case addrs.ListResourceMode:
+		return d.getListResource(config, rng)
+	default:
+		// continue with the rest of the function
+	}
+
+	// Now, we're going to build up a value that represents the resource
+	// or resources that are in the state.
+	instances := map[addrs.InstanceKey]cty.Value{}
+
+	// First, we're going to load any instances that we have written into the
+	// deferrals system. A deferred resource overrides anything that might be
+	// in the state for the resource, so we do this first.
+	for key, value := range d.Evaluator.Deferrals.GetDeferredResourceInstances(addr.Absolute(d.ModulePath)) {
+		instances[key] = value
+	}
+
+	// Proactively read out all the resource changes before iteration. Not only
+	// does GetResourceInstanceChange have to iterate over all instances
+	// internally causing an n^2 lookup, but Changes is also a major point of
+	// lock contention.
+	resChanges := d.Evaluator.Changes.GetChangesForConfigResource(addr.InModule(moduleConfig.Path))
+	instChanges := addrs.MakeMap[addrs.AbsResourceInstance, *plans.ResourceInstanceChange]()
+	for _, ch := range resChanges {
+		instChanges.Put(ch.Addr, ch)
 	}
 
 	rs := d.Evaluator.State.Resource(addr.Absolute(d.ModulePath))
+	// Decode all instances in the current state
+	pendingDestroy := d.Operation == walkDestroy
+	if rs != nil {
+		for key, is := range rs.Instances {
+			if _, ok := instances[key]; ok {
+				// Then we've already loaded this instance from the deferrals so
+				// we'll just ignore it being in state.
+				continue
+			}
+			// Otherwise, we'll load the instance from state.
 
-	if rs == nil {
+			if is == nil || is.Current == nil {
+				// Assume we're dealing with an instance that hasn't been created yet.
+				instances[key] = cty.UnknownVal(ty)
+				continue
+			}
+
+			instAddr := addr.Instance(key).Absolute(d.ModulePath)
+			change := instChanges.Get(instAddr)
+			if change != nil {
+				// Don't take any resources that are yet to be deleted into account.
+				// If the referenced resource is CreateBeforeDestroy, then orphaned
+				// instances will be in the state, as they are not destroyed until
+				// after their dependants are updated.
+				if change.Action == plans.Delete {
+					if !pendingDestroy {
+						continue
+					}
+				}
+			}
+
+			// Planned resources are temporarily stored in state with empty values,
+			// and need to be replaced by the planned value here.
+			if is.Current.Status == states.ObjectPlanned {
+				if change == nil {
+					// FIXME: This is usually an unfortunate case where we need to
+					// lookup an individual instance referenced via "self" for
+					// postconditions which we know exists, but because evaluation
+					// must always get the resource in aggregate some instance
+					// changes may not yet be registered.
+					instances[key] = cty.DynamicVal
+					// log the problem for debugging, since it may be a legitimate error we can't catch
+					log.Printf("[WARN] instance %s is marked as having a change pending but that change is not recorded in the plan", instAddr)
+					continue
+				}
+				instances[key] = change.After
+				continue
+			}
+
+			ios, err := is.Current.Decode(schema)
+			if err != nil {
+				// This shouldn't happen, since by the time we get here we
+				// should have upgraded the state data already.
+				diags = diags.Append(&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid resource instance data in state",
+					Detail:   fmt.Sprintf("Instance %s data could not be decoded from the state: %s.", instAddr, err),
+					Subject:  &config.DeclRange,
+				})
+				continue
+			}
+
+			val := ios.Value
+
+			instances[key] = val
+		}
+	}
+
+	if len(instances) == 0 {
 		switch d.Operation {
 		case walkPlan, walkApply:
 			// During plan and apply as we evaluate each removed instance they
@@ -640,83 +776,6 @@ func (d *evaluationStateData) GetResource(addr addrs.Resource, rng tfdiags.Sourc
 			// states populated for all resources in the configuration.
 			return cty.DynamicVal, diags
 		}
-	}
-
-	// Now, we're going to build up a value that represents the resource
-	// or resources that are in the state.
-	instances := map[addrs.InstanceKey]cty.Value{}
-
-	// First, we're going to load any instances that we have written into the
-	// deferrals system. A deferred resource overrides anything that might be
-	// in the state for the resource, so we do this first.
-	for key, value := range d.Evaluator.Deferrals.GetDeferredResourceInstances(addr.Absolute(d.ModulePath)) {
-		instances[key] = value
-	}
-
-	// Decode all instances in the current state
-	pendingDestroy := d.Operation == walkDestroy
-	for key, is := range rs.Instances {
-		if _, ok := instances[key]; ok {
-			// Then we've already loaded this instance from the deferrals so
-			// we'll just ignore it being in state.
-			continue
-		}
-		// Otherwise, we'll load the instance from state.
-
-		if is == nil || is.Current == nil {
-			// Assume we're dealing with an instance that hasn't been created yet.
-			instances[key] = cty.UnknownVal(ty)
-			continue
-		}
-
-		instAddr := addr.Instance(key).Absolute(d.ModulePath)
-		change := d.Evaluator.Changes.GetResourceInstanceChange(instAddr, addrs.NotDeposed)
-		if change != nil {
-			// Don't take any resources that are yet to be deleted into account.
-			// If the referenced resource is CreateBeforeDestroy, then orphaned
-			// instances will be in the state, as they are not destroyed until
-			// after their dependants are updated.
-			if change.Action == plans.Delete {
-				if !pendingDestroy {
-					continue
-				}
-			}
-		}
-
-		// Planned resources are temporarily stored in state with empty values,
-		// and need to be replaced by the planned value here.
-		if is.Current.Status == states.ObjectPlanned {
-			if change == nil {
-				// FIXME: This is usually an unfortunate case where we need to
-				// lookup an individual instance referenced via "self" for
-				// postconditions which we know exists, but because evaluation
-				// must always get the resource in aggregate some instance
-				// changes may not yet be registered.
-				instances[key] = cty.DynamicVal
-				// log the problem for debugging, since it may be a legitimate error we can't catch
-				log.Printf("[WARN] instance %s is marked as having a change pending but that change is not recorded in the plan", instAddr)
-				continue
-			}
-			instances[key] = change.After
-			continue
-		}
-
-		ios, err := is.Current.Decode(schema)
-		if err != nil {
-			// This shouldn't happen, since by the time we get here we
-			// should have upgraded the state data already.
-			diags = diags.Append(&hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid resource instance data in state",
-				Detail:   fmt.Sprintf("Instance %s data could not be decoded from the state: %s.", instAddr, err),
-				Subject:  &config.DeclRange,
-			})
-			continue
-		}
-
-		val := ios.Value
-
-		instances[key] = val
 	}
 
 	// ret should be populated with a valid value in all cases below
@@ -788,6 +847,117 @@ func (d *evaluationStateData) GetResource(addr addrs.Resource, rng tfdiags.Sourc
 		}
 
 		ret = val
+	}
+
+	return ret, diags
+}
+
+func (d *evaluationStateData) getListResource(config *configs.Resource, rng tfdiags.SourceRange) (cty.Value, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+	switch d.Operation {
+	case walkValidate:
+		return cty.DynamicVal, diags
+	case walkPlan:
+		// continue
+	default:
+		return cty.DynamicVal, diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  `Unsupported operation`,
+			Detail:   fmt.Sprintf("List resources are not supported in %s operations.", d.Operation),
+			Subject:  rng.ToHCL().Ptr(),
+		})
+	}
+
+	lAddr := config.Addr()
+	mAddr := addrs.Resource{
+		Mode: addrs.ManagedResourceMode,
+		Type: lAddr.Type,
+		Name: lAddr.Name,
+	}
+	resourceSchema := d.getResourceSchema(mAddr, config.Provider)
+	if resourceSchema.Body == nil {
+		// This shouldn't happen, since validation before we get here should've
+		// taken care of it, but we'll show a reasonable error message anyway.
+		diags = diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  `Missing resource type schema`,
+			Detail:   fmt.Sprintf("No schema is available for %s in %s. This is a bug in Terraform and should be reported.", lAddr, config.Provider),
+			Subject:  rng.ToHCL().Ptr(),
+		})
+		return cty.DynamicVal, diags
+	}
+	resourceType := resourceSchema.Body.ImpliedType()
+	queries := d.Evaluator.Changes.GetQueryInstancesForAbsResource(lAddr.Absolute(d.ModulePath))
+
+	if len(queries) == 0 {
+		// Since we know there are no instances, return an empty container of the expected type.
+		switch {
+		case config.Count != nil:
+			return cty.EmptyTupleVal, diags
+		case config.ForEach != nil:
+			return cty.EmptyObjectVal, diags
+		default:
+			return cty.DynamicVal, diags
+		}
+	}
+
+	var ret cty.Value
+	switch {
+	case config.Count != nil:
+		// figure out what the last index we have is
+		length := -1
+		for _, inst := range queries {
+			if intKey, ok := inst.Addr.Resource.Key.(addrs.IntKey); ok {
+				length = max(int(intKey)+1, length)
+			}
+		}
+
+		if length > 0 {
+			vals := make([]cty.Value, length)
+			for _, inst := range queries {
+				key := inst.Addr.Resource.Key
+				if intKey, ok := key.(addrs.IntKey); ok {
+					vals[int(intKey)] = inst.Results.Value
+				}
+			}
+
+			// Insert unknown values where there are any missing instances
+			for i, v := range vals {
+				if v == cty.NilVal {
+					vals[i] = cty.UnknownVal(resourceType)
+				}
+			}
+			ret = cty.TupleVal(vals)
+		} else {
+			ret = cty.EmptyTupleVal
+		}
+	case config.ForEach != nil:
+		vals := make(map[string]cty.Value)
+		for _, inst := range queries {
+			key := inst.Addr.Resource.Key
+			if strKey, ok := key.(addrs.StringKey); ok {
+				vals[string(strKey)] = inst.Results.Value
+			}
+		}
+
+		if len(vals) > 0 {
+			// We use an object rather than a map here because resource schemas
+			// may include dynamically-typed attributes, which will then cause
+			// each instance to potentially have a different runtime type even
+			// though they all conform to the static schema.
+			ret = cty.ObjectVal(vals)
+		} else {
+			ret = cty.EmptyObjectVal
+		}
+	default:
+		if len(queries) <= 0 {
+			// if the instance is missing, insert an empty tuple
+			ret = cty.ObjectVal(map[string]cty.Value{
+				"data": cty.EmptyTupleVal,
+			})
+		} else {
+			ret = queries[0].Results.Value
+		}
 	}
 
 	return ret, diags
@@ -945,27 +1115,21 @@ func (d *evaluationStateData) GetOutput(addr addrs.OutputValue, rng tfdiags.Sour
 		return cty.DynamicVal, diags
 	}
 
-	output := d.Evaluator.State.OutputValue(addr.Absolute(d.ModulePath))
-	if output == nil {
-		// Then the output itself returned null, so we'll package that up and
-		// pass it on.
-		output = &states.OutputValue{
-			Addr:      addr.Absolute(d.ModulePath),
-			Value:     cty.NilVal,
-			Sensitive: config.Sensitive,
-		}
-	} else if output.Value == cty.NilVal || output.Value.IsNull() {
-		// Then we did get a value but Terraform itself thought it was NilVal
-		// so we treat this as if the value isn't yet known.
-		output.Value = cty.DynamicVal
+	var value cty.Value
+	if !d.Evaluator.NamedValues.HasOutputValue(addr.Absolute(d.ModulePath)) {
+		value = cty.DynamicVal
+	} else {
+		value = d.Evaluator.NamedValues.GetOutputValue(addr.Absolute(d.ModulePath))
 	}
 
-	val := output.Value
-	if output.Sensitive {
-		val = val.Mark(marks.Sensitive)
+	if config.Sensitive {
+		value = value.Mark(marks.Sensitive)
+	}
+	if config.Ephemeral {
+		value = value.Mark(marks.Ephemeral)
 	}
 
-	return val, diags
+	return value, diags
 }
 
 // moduleDisplayAddr returns a string describing the given module instance

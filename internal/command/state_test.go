@@ -9,6 +9,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/states/statemgr"
 )
 
@@ -28,9 +29,11 @@ func testStateBackups(t *testing.T, dir string) []string {
 }
 
 func TestStateDefaultBackupExtension(t *testing.T) {
-	testCwd(t)
+	tmp := t.TempDir()
+	t.Chdir(tmp)
 
-	s, err := (&StateMeta{}).State()
+	view := arguments.ViewHuman
+	s, err := (&StateMeta{}).State(view)
 	if err != nil {
 		t.Fatal(err)
 	}
