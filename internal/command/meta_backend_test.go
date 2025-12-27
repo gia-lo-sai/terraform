@@ -6,7 +6,6 @@ package command
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -389,7 +388,7 @@ func TestMetaBackend_configureNewBackendWithState(t *testing.T) {
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
@@ -439,7 +438,7 @@ func TestMetaBackend_configureNewBackendWithoutCopy(t *testing.T) {
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
@@ -484,7 +483,7 @@ func TestMetaBackend_configureNewBackendWithStateNoMigrate(t *testing.T) {
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
@@ -555,7 +554,7 @@ func TestMetaBackend_configureNewBackendWithStateExisting(t *testing.T) {
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
@@ -626,7 +625,7 @@ func TestMetaBackend_configureNewBackendWithStateExistingNoMigrate(t *testing.T)
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
@@ -1476,13 +1475,13 @@ func TestMetaBackend_configuredBackendUnset(t *testing.T) {
 
 	// Verify the default paths don't exist
 	if !isEmptyState(DefaultStateFilename) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename)
+		data, _ := os.ReadFile(DefaultStateFilename)
 		t.Fatal("state should not exist, but contains:\n", string(data))
 	}
 
 	// Verify a backup doesn't exist
 	if !isEmptyState(DefaultStateFilename + DefaultBackupExtension) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename + DefaultBackupExtension)
+		data, _ := os.ReadFile(DefaultStateFilename + DefaultBackupExtension)
 		t.Fatal("backup should not exist, but contains:\n", string(data))
 	}
 
@@ -1499,7 +1498,7 @@ func TestMetaBackend_configuredBackendUnset(t *testing.T) {
 
 	// Verify no backup since it was empty to start
 	if !isEmptyState(DefaultStateFilename + DefaultBackupExtension) {
-		data, _ := ioutil.ReadFile(DefaultStateFilename + DefaultBackupExtension)
+		data, _ := os.ReadFile(DefaultStateFilename + DefaultBackupExtension)
 		t.Fatal("backup state should be empty, but contains:\n", string(data))
 	}
 }
@@ -1561,7 +1560,7 @@ func TestMetaBackend_configuredBackendUnsetCopy(t *testing.T) {
 	}
 }
 
-// A plan that has uses the local backend
+// A plan that has uses the local backend and local state storage
 func TestMetaBackend_planLocal(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
@@ -1576,17 +1575,19 @@ func TestMetaBackend_planLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backendConfig := plans.Backend{
-		Type:      "local",
-		Config:    backendConfigRaw,
-		Workspace: "default",
+	plan := &plans.Plan{
+		Backend: &plans.Backend{
+			Type:      "local",
+			Config:    backendConfigRaw,
+			Workspace: "default",
+		},
 	}
 
 	// Setup the meta
 	m := testMetaBackend(t, nil)
 
 	// Get the backend
-	b, diags := m.BackendForLocalPlan(backendConfig)
+	b, diags := m.BackendForLocalPlan(plan)
 	if diags.HasErrors() {
 		t.Fatal(diags.Err())
 	}
@@ -1650,6 +1651,71 @@ func TestMetaBackend_planLocal(t *testing.T) {
 	}
 }
 
+// A plan that has uses the local backend and pluggable state storage
+func TestMetaBackend_planLocal_stateStore(t *testing.T) {
+	// Create a temporary working directory
+	td := t.TempDir()
+	testCopyDir(t, testFixturePath("state-store-unchanged"), td)
+	t.Chdir(td)
+
+	stateStoreConfigBlock := cty.ObjectVal(map[string]cty.Value{
+		"value": cty.StringVal("foobar"),
+	})
+	stateStoreConfigRaw, err := plans.NewDynamicValue(stateStoreConfigBlock, stateStoreConfigBlock.Type())
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerAddr := addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test")
+
+	plan := &plans.Plan{
+		StateStore: &plans.StateStore{
+			Type:      "test_store",
+			Config:    stateStoreConfigRaw,
+			Workspace: backend.DefaultStateName,
+			Provider: &plans.Provider{
+				Version: version.Must(version.NewVersion("1.2.3")), // Matches lock file in the test fixtures
+				Source:  &providerAddr,
+				Config:  nil,
+			},
+		},
+	}
+
+	// Setup the meta, including a mock provider set up to mock PSS
+	m := testMetaBackend(t, nil)
+	mock := testStateStoreMockWithChunkNegotiation(t, 1000)
+	m.testingOverrides = &testingOverrides{
+		Providers: map[addrs.Provider]providers.Factory{
+			addrs.NewDefaultProvider("test"): providers.FactoryFixed(mock),
+		},
+	}
+
+	// Get the backend
+	b, diags := m.BackendForLocalPlan(plan)
+	if diags.HasErrors() {
+		t.Fatal(diags.Err())
+	}
+
+	// Check the state
+	s, sDiags := b.StateMgr(backend.DefaultStateName)
+	if sDiags.HasErrors() {
+		t.Fatalf("unexpected error: %s", sDiags.Err())
+	}
+	if err := s.RefreshState(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	state := s.State()
+	if state != nil {
+		t.Fatalf("state should be nil: %#v", state)
+	}
+
+	// Write some state
+	state = states.NewState()
+	s.WriteState(state)
+	if err := s.PersistState(nil); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
 // A plan with a custom state save path
 func TestMetaBackend_planLocalStatePath(t *testing.T) {
 	td := t.TempDir()
@@ -1667,10 +1733,12 @@ func TestMetaBackend_planLocalStatePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plannedBackend := plans.Backend{
-		Type:      "local",
-		Config:    backendConfigRaw,
-		Workspace: "default",
+	plan := &plans.Plan{
+		Backend: &plans.Backend{
+			Type:      "local",
+			Config:    backendConfigRaw,
+			Workspace: "default",
+		},
 	}
 
 	// Create an alternate output path
@@ -1687,7 +1755,7 @@ func TestMetaBackend_planLocalStatePath(t *testing.T) {
 	m.stateOutPath = statePath
 
 	// Get the backend
-	b, diags := m.BackendForLocalPlan(plannedBackend)
+	b, diags := m.BackendForLocalPlan(plan)
 	if diags.HasErrors() {
 		t.Fatal(diags.Err())
 	}
@@ -1766,17 +1834,19 @@ func TestMetaBackend_planLocalMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backendConfig := plans.Backend{
-		Type:      "local",
-		Config:    backendConfigRaw,
-		Workspace: "default",
+	plan := &plans.Plan{
+		Backend: &plans.Backend{
+			Type:      "local",
+			Config:    backendConfigRaw,
+			Workspace: "default",
+		},
 	}
 
 	// Setup the meta
 	m := testMetaBackend(t, nil)
 
 	// Get the backend
-	b, diags := m.BackendForLocalPlan(backendConfig)
+	b, diags := m.BackendForLocalPlan(plan)
 	if diags.HasErrors() {
 		t.Fatal(diags.Err())
 	}
@@ -1941,7 +2011,7 @@ func TestMetaBackend_backendConfigToExtra(t *testing.T) {
 
 	// init again but remove the path option from the config
 	cfg := "terraform {\n  backend \"local\" {}\n}\n"
-	if err := ioutil.WriteFile("main.tf", []byte(cfg), 0644); err != nil {
+	if err := os.WriteFile("main.tf", []byte(cfg), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2088,44 +2158,6 @@ func Test_determineInitReason(t *testing.T) {
 	}
 }
 
-// Unsetting a saved state store
-//
-// TODO(SarahFrench/radeksimko): currently this test only confirms that we're hitting the switch
-// case for this scenario, and will need to be updated when that init feature is implemented.
-func TestMetaBackend_configuredStateStoreUnset(t *testing.T) {
-	td := t.TempDir()
-	testCopyDir(t, testFixturePath("state-store-unset"), td)
-	t.Chdir(td)
-
-	// Setup the meta
-	m := testMetaBackend(t, nil)
-	m.AllowExperimentalFeatures = true
-
-	// Get the state store's config
-	mod, loadDiags := m.loadSingleModule(td)
-	if loadDiags.HasErrors() {
-		t.Fatalf("unexpected error when loading test config: %s", loadDiags.Err())
-	}
-
-	// No mock provider is used here - yet
-	// Logic will need to be implemented that lets the init have access to
-	// a factory for the 'old' provider used for PSS previously. This will be
-	// used when migrating away from PSS entirely, or to a new PSS configuration.
-
-	// Get the operations backend
-	_, beDiags := m.Backend(&BackendOpts{
-		Init:             true,
-		StateStoreConfig: mod.StateStore,
-	})
-	if !beDiags.HasErrors() {
-		t.Fatal("expected an error to be returned during partial implementation of PSS")
-	}
-	wantErr := "Unsetting a state store is not implemented yet"
-	if !strings.Contains(beDiags.Err().Error(), wantErr) {
-		t.Fatalf("expected the returned error to contain %q, but got: %s", wantErr, beDiags.Err())
-	}
-}
-
 // Changing from using backend to state_store
 //
 // TODO(SarahFrench/radeksimko): currently this test only confirms that we're hitting the switch
@@ -2135,8 +2167,11 @@ func TestMetaBackend_configuredBackendToStateStore(t *testing.T) {
 	testCopyDir(t, testFixturePath("backend-to-state-store"), td)
 	t.Chdir(td)
 
+	mock := testStateStoreMock(t)
+
 	// Setup the meta
 	m := testMetaBackend(t, nil)
+	m.testingOverrides = metaOverridesForProvider(mock)
 	m.AllowExperimentalFeatures = true
 
 	// Get the state store's config
@@ -2144,12 +2179,6 @@ func TestMetaBackend_configuredBackendToStateStore(t *testing.T) {
 	if loadDiags.HasErrors() {
 		t.Fatalf("unexpected error when loading test config: %s", loadDiags.Err())
 	}
-
-	// Get mock provider to be used during init
-	//
-	// This imagines a provider called "test" that contains
-	// a pluggable state store implementation called "store".
-	mock := testStateStoreMock(t)
 
 	// Get the operations backend
 	locks := depsfile.NewLocks()
@@ -2167,51 +2196,12 @@ func TestMetaBackend_configuredBackendToStateStore(t *testing.T) {
 	_, beDiags := m.Backend(&BackendOpts{
 		Init:             true,
 		StateStoreConfig: mod.StateStore,
-		ProviderFactory:  providers.FactoryFixed(mock),
 		Locks:            locks,
 	})
 	if !beDiags.HasErrors() {
 		t.Fatal("expected an error to be returned during partial implementation of PSS")
 	}
 	wantErr := "Migration from backend to state store is not implemented yet"
-	if !strings.Contains(beDiags.Err().Error(), wantErr) {
-		t.Fatalf("expected the returned error to contain %q, but got: %s", wantErr, beDiags.Err())
-	}
-}
-
-// Changing from using state_store to backend
-//
-// TODO(SarahFrench/radeksimko): currently this test only confirms that we're hitting the switch
-// case for this scenario, and will need to be updated when that init feature is implemented.
-func TestMetaBackend_configuredStateStoreToBackend(t *testing.T) {
-	td := t.TempDir()
-	testCopyDir(t, testFixturePath("state-store-to-backend"), td)
-	t.Chdir(td)
-
-	// Setup the meta
-	m := testMetaBackend(t, nil)
-	m.AllowExperimentalFeatures = true
-
-	// Get the backend's config
-	mod, loadDiags := m.loadSingleModule(td)
-	if loadDiags.HasErrors() {
-		t.Fatalf("unexpected error when loading test config: %s", loadDiags.Err())
-	}
-
-	// No mock provider is used here - yet
-	// Logic will need to be implemented that lets the init have access to
-	// a factory for the 'old' provider used for PSS previously. This will be
-	// used when migrating away from PSS entirely, or to a new PSS configuration.
-
-	// Get the operations backend
-	_, beDiags := m.Backend(&BackendOpts{
-		Init:          true,
-		BackendConfig: mod.Backend,
-	})
-	if !beDiags.HasErrors() {
-		t.Fatal("expected an error to be returned during partial implementation of PSS")
-	}
-	wantErr := "Migration from state store to backend is not implemented yet"
 	if !strings.Contains(beDiags.Err().Error(), wantErr) {
 		t.Fatalf("expected the returned error to contain %q, but got: %s", wantErr, beDiags.Err())
 	}
@@ -2255,8 +2245,11 @@ func TestMetaBackend_configureStateStoreVariableUse(t *testing.T) {
 			testCopyDir(t, testFixturePath(tc.fixture), td)
 			t.Chdir(td)
 
+			mock := testStateStoreMock(t)
+
 			// Setup the meta
 			m := testMetaBackend(t, nil)
+			m.testingOverrides = metaOverridesForProvider(mock)
 			m.AllowExperimentalFeatures = true
 
 			// Get the state store's config
@@ -2265,17 +2258,10 @@ func TestMetaBackend_configureStateStoreVariableUse(t *testing.T) {
 				t.Fatalf("unexpected error when loading test config: %s", loadDiags.Err())
 			}
 
-			// Get mock provider to be used during init
-			//
-			// This imagines a provider called "test" that contains
-			// a pluggable state store implementation called "store".
-			mock := testStateStoreMock(t)
-
 			// Get the operations backend
 			_, err := m.Backend(&BackendOpts{
 				Init:             true,
 				StateStoreConfig: mod.StateStore,
-				ProviderFactory:  providers.FactoryFixed(mock),
 				Locks:            locks,
 			})
 			if err == nil {
@@ -2330,21 +2316,7 @@ func TestSavedStateStore(t *testing.T) {
 		testCopyDir(t, testFixturePath("state-store-changed/store-config"), td) // Fixtures with config that differs from backend state file
 		t.Chdir(td)
 
-		// Make a state manager for accessing the backend state file,
-		// and read the backend state from file
-		m := testMetaBackend(t, nil)
-		statePath := filepath.Join(m.DataDir(), DefaultStateFilename)
-		sMgr := &clistate.LocalState{Path: statePath}
-		err := sMgr.RefreshState()
-		if err != nil {
-			t.Fatalf("unexpected error: %s", err)
-		}
-
-		// Prepare provider factories for use
 		mock := testStateStoreMock(t)
-		factory := func() (providers.Interface, error) {
-			return mock, nil
-		}
 		mock.ConfigureProviderFn = func(req providers.ConfigureProviderRequest) providers.ConfigureProviderResponse {
 			// Assert that the state store is configured using backend state file values from the fixtures
 			config := req.Config.AsValueMap()
@@ -2377,8 +2349,19 @@ func TestSavedStateStore(t *testing.T) {
 			}
 		}
 
+		// Make a state manager for accessing the backend state file,
+		// and read the backend state from file
+		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
+		statePath := filepath.Join(m.DataDir(), DefaultStateFilename)
+		sMgr := &clistate.LocalState{Path: statePath}
+		err := sMgr.RefreshState()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+
 		// Code under test
-		b, diags := m.savedStateStore(sMgr, factory)
+		b, diags := m.savedStateStore(sMgr)
 		if diags.HasErrors() {
 			t.Fatalf("unexpected errors: %s", diags.Err())
 		}
@@ -2396,34 +2379,20 @@ func TestSavedStateStore(t *testing.T) {
 		}
 	})
 
-	t.Run("error - no provider factory", func(t *testing.T) {
-		// sMgr pointing to a file that doesn't exist is sufficient setup for this test
-		sMgr := &clistate.LocalState{Path: "foobar.tfstate"}
-
-		m := testMetaBackend(t, nil)
-		_, diags := m.savedStateStore(sMgr, nil)
-		if !diags.HasErrors() {
-			t.Fatal("expected errors but got none")
-		}
-
-		expectedErr := "Missing provider details when configuring state store"
-		if !strings.Contains(diags.Err().Error(), expectedErr) {
-			t.Fatalf("expected the returned error to include %q, got: %s",
-				expectedErr,
-				diags.Err(),
-			)
-		}
-	})
-
 	t.Run("error - when there's no state stores in provider", func(t *testing.T) {
 		// Create a temporary working directory
 		td := t.TempDir()
 		testCopyDir(t, testFixturePath("state-store-changed/store-config"), td) // Fixtures with config that differs from backend state file
 		t.Chdir(td)
 
+		mock := testStateStoreMock(t)
+		delete(mock.GetProviderSchemaResponse.StateStores, "test_store") // Remove the only state store impl.
+
 		// Make a state manager for accessing the backend state file,
 		// and read the backend state from file
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
+
 		statePath := filepath.Join(m.DataDir(), DefaultStateFilename)
 		sMgr := &clistate.LocalState{Path: statePath}
 		err := sMgr.RefreshState()
@@ -2431,10 +2400,7 @@ func TestSavedStateStore(t *testing.T) {
 			t.Fatalf("unexpected error: %s", err)
 		}
 
-		mock := testStateStoreMock(t)
-		delete(mock.GetProviderSchemaResponse.StateStores, "test_store") // Remove the only state store impl.
-
-		_, diags := m.savedStateStore(sMgr, providers.FactoryFixed(mock))
+		_, diags := m.savedStateStore(sMgr)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
 		}
@@ -2453,9 +2419,17 @@ func TestSavedStateStore(t *testing.T) {
 		testCopyDir(t, testFixturePath("state-store-changed/store-config"), td) // Fixtures with config that differs from backend state file
 		t.Chdir(td)
 
+		mock := testStateStoreMock(t)
+		testStore := mock.GetProviderSchemaResponse.StateStores["test_store"]
+		delete(mock.GetProviderSchemaResponse.StateStores, "test_store")
+		// Make the provider contain a "test_bore" impl., while the config specifies a "test_store" impl.
+		mock.GetProviderSchemaResponse.StateStores["test_bore"] = testStore
+
 		// Make a state manager for accessing the backend state file,
 		// and read the backend state from file
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
+
 		statePath := filepath.Join(m.DataDir(), DefaultStateFilename)
 		sMgr := &clistate.LocalState{Path: statePath}
 		err := sMgr.RefreshState()
@@ -2463,13 +2437,7 @@ func TestSavedStateStore(t *testing.T) {
 			t.Fatalf("unexpected error: %s", err)
 		}
 
-		mock := testStateStoreMock(t)
-		testStore := mock.GetProviderSchemaResponse.StateStores["test_store"]
-		delete(mock.GetProviderSchemaResponse.StateStores, "test_store")
-		// Make the provider contain a "test_bore" impl., while the config specifies a "test_store" impl.
-		mock.GetProviderSchemaResponse.StateStores["test_bore"] = testStore
-
-		_, diags := m.savedStateStore(sMgr, providers.FactoryFixed(mock))
+		_, diags := m.savedStateStore(sMgr)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
 		}
@@ -2519,7 +2487,7 @@ func TestMetaBackend_GetStateStoreProviderFactory(t *testing.T) {
 
 		// Setup the meta and test providerFactoriesDuringInit
 		m := testMetaBackend(t, nil)
-		_, diags := m.GetStateStoreProviderFactory(config, locks)
+		_, diags := m.StateStoreProviderFactoryFromConfig(config, locks)
 		if !diags.HasErrors() {
 			t.Fatalf("expected error but got none")
 		}
@@ -2549,7 +2517,7 @@ func TestMetaBackend_GetStateStoreProviderFactory(t *testing.T) {
 
 		// Setup the meta and test providerFactoriesDuringInit
 		m := testMetaBackend(t, nil)
-		_, diags := m.GetStateStoreProviderFactory(config, locks)
+		_, diags := m.StateStoreProviderFactoryFromConfig(config, locks)
 		if !diags.HasErrors() {
 			t.Fatal("expected and error but got none")
 		}
@@ -2612,11 +2580,25 @@ func TestMetaBackend_stateStoreInitFromConfig(t *testing.T) {
 			}
 		}
 
+		providerAddr := tfaddr.MustParseProviderSource("hashicorp/test")
+		constraint, err := providerreqs.ParseVersionConstraints(">1.0.0")
+		if err != nil {
+			t.Fatalf("test setup failed when making constraint: %s", err)
+		}
+		locks := depsfile.NewLocks()
+		locks.SetProvider(
+			providerAddr,
+			versions.MustParseVersion("1.2.3"),
+			constraint,
+			[]providerreqs.Hash{""},
+		)
+
 		// Prepare the meta
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
 
 		// Code under test
-		b, _, _, diags := m.stateStoreInitFromConfig(config, providers.FactoryFixed(mock))
+		b, _, _, diags := m.stateStoreInitFromConfig(config, locks)
 		if diags.HasErrors() {
 			t.Fatalf("unexpected errors: %s", diags.Err())
 		}
@@ -2633,31 +2615,27 @@ func TestMetaBackend_stateStoreInitFromConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("error - no provider factory set", func(t *testing.T) {
-		// Prepare the meta
-		m := testMetaBackend(t, nil)
-
-		_, _, _, diags := m.stateStoreInitFromConfig(config, nil) // Factory value isn't set
-		if !diags.HasErrors() {
-			t.Fatal("expected errors but got none")
-		}
-		expectedErr := "Missing provider details when configuring state store"
-		if !strings.Contains(diags.Err().Error(), expectedErr) {
-			t.Fatalf("expected the returned error to include %q, got: %s",
-				expectedErr,
-				diags.Err(),
-			)
-		}
-	})
-
 	t.Run("error - when there's no state stores in provider", func(t *testing.T) {
 		// Prepare the meta
 		m := testMetaBackend(t, nil)
-
 		mock := testStateStoreMock(t)
 		delete(mock.GetProviderSchemaResponse.StateStores, "test_store") // Remove the only state store impl.
+		m.testingOverrides = metaOverridesForProvider(mock)
 
-		_, _, _, diags := m.stateStoreInitFromConfig(config, providers.FactoryFixed(mock))
+		locks := depsfile.NewLocks()
+		providerAddr := addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test")
+		constraint, err := providerreqs.ParseVersionConstraints(">1.0.0")
+		if err != nil {
+			t.Fatalf("test setup failed when making constraint: %s", err)
+		}
+		locks.SetProvider(
+			providerAddr,
+			versions.MustParseVersion("9.9.9"),
+			constraint,
+			[]providerreqs.Hash{""},
+		)
+
+		_, _, _, diags := m.stateStoreInitFromConfig(config, locks)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
 		}
@@ -2673,14 +2651,27 @@ func TestMetaBackend_stateStoreInitFromConfig(t *testing.T) {
 	t.Run("error - when there's no matching state store in provider Terraform suggests different identifier", func(t *testing.T) {
 		// Prepare the meta
 		m := testMetaBackend(t, nil)
-
 		mock := testStateStoreMock(t)
 		testStore := mock.GetProviderSchemaResponse.StateStores["test_store"]
 		delete(mock.GetProviderSchemaResponse.StateStores, "test_store")
 		// Make the provider contain a "test_bore" impl., while the config specifies a "test_store" impl.
 		mock.GetProviderSchemaResponse.StateStores["test_bore"] = testStore
+		m.testingOverrides = metaOverridesForProvider(mock)
 
-		_, _, _, diags := m.stateStoreInitFromConfig(config, providers.FactoryFixed(mock))
+		locks := depsfile.NewLocks()
+		providerAddr := addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test")
+		constraint, err := providerreqs.ParseVersionConstraints(">1.0.0")
+		if err != nil {
+			t.Fatalf("test setup failed when making constraint: %s", err)
+		}
+		locks.SetProvider(
+			providerAddr,
+			versions.MustParseVersion("1.2.3"),
+			constraint,
+			[]providerreqs.Hash{""},
+		)
+
+		_, _, _, diags := m.stateStoreInitFromConfig(config, locks)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
 		}
@@ -2728,16 +2719,17 @@ func TestMetaBackend_stateStoreConfig(t *testing.T) {
 	t.Run("override config can change values of custom attributes in the state_store block", func(t *testing.T) {
 		overrideValue := "overridden"
 		configOverride := configs.SynthBody("synth", map[string]cty.Value{"value": cty.StringVal(overrideValue)})
-		mock := testStateStoreMock(t)
 		opts := &BackendOpts{
 			StateStoreConfig: config,
 			ConfigOverride:   configOverride,
-			ProviderFactory:  providers.FactoryFixed(mock),
 			Init:             true,
 			Locks:            locks,
 		}
 
+		mock := testStateStoreMock(t)
+
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
 		finalConfig, _, diags := m.stateStoreConfig(opts)
 		if diags.HasErrors() {
 			t.Fatalf("unexpected errors: %s", diags.Err())
@@ -2765,34 +2757,15 @@ func TestMetaBackend_stateStoreConfig(t *testing.T) {
 			Locks:            locks,
 		}
 
+		mock := testStateStoreMock(t)
+
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
 		_, _, diags := m.stateStoreConfig(opts)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
 		}
 		expectedErr := "Missing state store configuration"
-		if !strings.Contains(diags.Err().Error(), expectedErr) {
-			t.Fatalf("expected the returned error to include %q, got: %s",
-				expectedErr,
-				diags.Err(),
-			)
-		}
-	})
-
-	t.Run("error - no provider factory present", func(t *testing.T) {
-		opts := &BackendOpts{
-			StateStoreConfig: config,
-			ProviderFactory:  nil, // unset
-			Init:             true,
-			Locks:            locks,
-		}
-
-		m := testMetaBackend(t, nil)
-		_, _, diags := m.stateStoreConfig(opts)
-		if !diags.HasErrors() {
-			t.Fatal("expected errors but got none")
-		}
-		expectedErr := "Missing provider details when configuring state store"
 		if !strings.Contains(diags.Err().Error(), expectedErr) {
 			t.Fatalf("expected the returned error to include %q, got: %s",
 				expectedErr,
@@ -2807,12 +2780,12 @@ func TestMetaBackend_stateStoreConfig(t *testing.T) {
 
 		opts := &BackendOpts{
 			StateStoreConfig: config,
-			ProviderFactory:  providers.FactoryFixed(mock),
 			Init:             true,
 			Locks:            locks,
 		}
 
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
 		_, _, diags := m.stateStoreConfig(opts)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
@@ -2835,12 +2808,13 @@ func TestMetaBackend_stateStoreConfig(t *testing.T) {
 
 		opts := &BackendOpts{
 			StateStoreConfig: config,
-			ProviderFactory:  providers.FactoryFixed(mock),
 			Init:             true,
 			Locks:            locks,
 		}
 
 		m := testMetaBackend(t, nil)
+		m.testingOverrides = metaOverridesForProvider(mock)
+
 		_, _, diags := m.stateStoreConfig(opts)
 		if !diags.HasErrors() {
 			t.Fatal("expected errors but got none")
@@ -3128,6 +3102,13 @@ func testStateStoreMock(t *testing.T) *testing_provider.MockProvider {
 					},
 				},
 			},
+		},
+		ConfigureStateStoreFn: func(cssr providers.ConfigureStateStoreRequest) providers.ConfigureStateStoreResponse {
+			return providers.ConfigureStateStoreResponse{
+				Capabilities: providers.StateStoreServerCapabilities{
+					ChunkSize: cssr.Capabilities.ChunkSize,
+				},
+			}
 		},
 	}
 }
